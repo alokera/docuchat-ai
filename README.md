@@ -2,8 +2,6 @@
 
 > Chat with your documents. Upload a PDF and ask questions about it. Retrieval-augmented generation (RAG) finds the relevant passages, and xAI Grok answers with page citations.
 
-![CI](https://github.com/alokera/docuchat-ai/actions/workflows/ci.yml/badge.svg)
-
 **Live demo:** _coming soon_ <!-- add your Vercel URL -->
 
 <!-- Add a screenshot or GIF here: ![Demo](docs/demo.gif) -->
@@ -62,7 +60,6 @@ v0.1 sent the *whole document* with every question (context stuffing). That work
 | Embeddings | transformers.js + `all-MiniLM-L6-v2` (Web Worker) | Free, private, runs anywhere; no server-side ML runtime |
 | Retrieval | Cosine similarity (hand-written) | Simple and fast at single-document scale |
 | Testing | Vitest | Unit tests for chunking and retrieval |
-| CI | GitHub Actions | Lint, typecheck, test, and build on every PR |
 
 ## Getting started
 
