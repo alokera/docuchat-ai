@@ -1,15 +1,18 @@
 import { getLLMClient, LLM_MODEL } from "@/lib/llm";
 import { buildSystemPrompt } from "@/lib/prompt";
-import type { ChatMessage, ParsedDocument } from "@/lib/types";
+import type { ChatMessage, SourceExcerpt } from "@/lib/types";
 
 // Allow long streamed answers on serverless platforms like Vercel.
 export const maxDuration = 60;
 
 // Only the most recent turns are sent, to keep prompts bounded.
 const MAX_HISTORY = 10;
+const MAX_SOURCES = 10;
+const MAX_SOURCE_CHARS = 4000;
 
 interface ChatRequestBody {
-  document?: ParsedDocument;
+  documentName?: string;
+  sources?: SourceExcerpt[];
   messages?: ChatMessage[];
 }
 
@@ -21,24 +24,31 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { document, messages } = body;
-  if (!document?.pages?.length) {
+  const { documentName, sources, messages } = body;
+  if (typeof documentName !== "string" || !Array.isArray(sources) || sources.length === 0) {
     return Response.json({ error: "Upload a document first." }, { status: 400 });
   }
   if (!messages?.length || messages.at(-1)?.role !== "user") {
     return Response.json({ error: "Ask a question first." }, { status: 400 });
   }
 
+  // The client chooses the excerpts, so bound what it can put into the prompt.
+  const excerpts = sources
+    .slice(0, MAX_SOURCES)
+    .filter((s) => Number.isInteger(s.page) && typeof s.text === "string")
+    .map((s) => ({ page: s.page, text: s.text.slice(0, MAX_SOURCE_CHARS) }));
+
   const history = messages
     .slice(-MAX_HISTORY)
-    .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string");
+    .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    .map(({ role, content }) => ({ role, content }));
 
   try {
     const stream = await getLLMClient().chat.completions.create({
       model: LLM_MODEL,
       stream: true,
       temperature: 0.2,
-      messages: [{ role: "system", content: buildSystemPrompt(document) }, ...history],
+      messages: [{ role: "system", content: buildSystemPrompt(documentName, excerpts) }, ...history],
     });
 
     // Re-emit only the text deltas as a plain-text stream the browser can read incrementally.
