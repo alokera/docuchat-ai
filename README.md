@@ -2,7 +2,7 @@
 
 > Chat with your documents. Upload a PDF and ask questions about it, with answers grounded in the document and page citations, powered by xAI Grok.
 
-![CI](https://github.com/<your-username>/docuchat-ai/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/alokera/docuchat-ai/actions/workflows/ci.yml/badge.svg)
 
 **Live demo:** _coming soon_ <!-- add your Vercel URL -->
 
@@ -56,7 +56,7 @@ v0.1 uses *context stuffing*: the entire document goes into every request. That'
 ## Getting started
 
 ```bash
-git clone https://github.com/<your-username>/docuchat-ai.git
+git clone https://github.com/alokera/docuchat-ai.git
 cd docuchat-ai
 npm install
 cp .env.example .env.local   # then add your XAI_API_KEY
