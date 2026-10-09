@@ -1,6 +1,6 @@
 # DocuChat AI
 
-> Chat with your documents. Upload a PDF and ask questions about it, with answers grounded in the document and page citations, powered by xAI Grok.
+> Chat with your documents. Upload a PDF and ask questions about it. Retrieval-augmented generation (RAG) finds the relevant passages, and xAI Grok answers with page citations.
 
 ![CI](https://github.com/alokera/docuchat-ai/actions/workflows/ci.yml/badge.svg)
 
@@ -11,37 +11,45 @@
 ## Features
 
 - 📄 Upload **PDF, TXT, or Markdown** files (drag & drop, up to 10 MB)
-- 💬 Ask questions in a chat interface with **streaming responses**
-- 📌 Answers cite **page numbers** and refuse to guess when the answer isn't in the document
-- 👀 Side-by-side view of the extracted document text
+- 🔎 **Retrieval-Augmented Generation (RAG):** only the passages relevant to your question are sent to the LLM
+- 🧠 **In-browser embeddings** (`all-MiniLM-L6-v2` via transformers.js in a Web Worker): free, private, no extra API key
+- 📌 Answers cite **page numbers**, show the **retrieved source snippets with similarity scores**, and jump to the page on click
+- 💬 **Streaming responses**, with refusal to guess when the answer isn't in the document
 - 🌗 Light/dark mode, responsive layout
 
-## How it works (v0.1)
+## How it works (v0.2: RAG)
 
 ```mermaid
 flowchart LR
-    A[User uploads PDF] --> B["/api/upload<br/>extract text per page"]
-    B --> C[Browser keeps document text]
-    C --> D["/api/chat<br/>document + question"]
-    D --> E[System prompt with<br/>page-tagged document]
-    E --> F[xAI Grok API]
-    F -- streamed tokens --> G[Chat UI]
+    subgraph Indexing["Indexing (once per document)"]
+        A[Upload file] --> B["/api/upload<br/>extract text per page<br/>+ split into chunks"]
+        B --> C["Web Worker<br/>embed each chunk<br/>(384-dim vectors)"]
+        C --> D[(In-memory<br/>vector index)]
+    end
+    subgraph Asking["Asking (every question)"]
+        Q[Question] --> E[Embed question]
+        E --> F["Cosine similarity<br/>top-5 chunks"]
+        D --> F
+        F --> G["/api/chat<br/>question + 5 excerpts"]
+        G --> H[xAI Grok]
+        H -- streamed tokens --> I[Answer + sources]
+    end
 ```
 
-1. **Upload:** the server extracts text from each page with [`unpdf`](https://github.com/unjs/unpdf) and returns it to the browser.
-2. **Ask:** the browser sends the document and the conversation to `/api/chat`.
-3. **Ground:** the whole document goes into the system prompt, tagged with `[Page N]` markers, plus rules: answer only from the document, cite pages, say "I couldn't find that" instead of guessing.
-4. **Stream:** Grok's response is streamed back token by token as plain text.
+1. **Parse & chunk** (server): text is extracted per page with [`unpdf`](https://github.com/unjs/unpdf) and split into ~1,000-character chunks with 200 characters of overlap. Splits prefer paragraph and sentence boundaries, and a chunk never spans two pages, so every chunk has exactly one page number to cite.
+2. **Embed** (browser): a Web Worker runs [`Xenova/all-MiniLM-L6-v2`](https://huggingface.co/Xenova/all-MiniLM-L6-v2) with [transformers.js](https://huggingface.co/docs/transformers.js) (WebAssembly, 8-bit quantized, ~23 MB, cached after the first download). Each chunk becomes a 384-dimensional, unit-length vector.
+3. **Retrieve** (browser): the question is embedded with the same model and compared against every chunk with cosine similarity. The top 5 chunks are kept. Follow-ups like "tell me more" include the previous question so retrieval has context.
+4. **Generate** (server): only those excerpts, tagged with page numbers, go into Grok's system prompt with grounding rules (answer only from the excerpts, cite pages, say "I couldn't find that" instead of guessing). The answer streams back token by token.
 
-The server is **stateless**: no database and nothing stored, so it deploys anywhere (e.g. Vercel serverless).
+### Design decisions
 
-### Known limitation → the motivation for v0.2
+- **Why embed in the browser?** The Node.js ONNX runtime is ~300 MB on Linux, which exceeds Vercel's 250 MB serverless function limit. Running the model in the browser keeps the server small and **stateless** (no database, nothing stored), costs nothing per embedding, and the document text never goes to a third-party embedding API.
+- **Why brute-force search instead of a vector database?** One document is at most a few thousand chunks, and scoring all of them takes milliseconds. A vector database with an approximate-nearest-neighbour index (e.g. pgvector + HNSW) becomes worth it with many documents or persistence, which is planned for v0.3.
+- **Why overlap chunks?** A fact that straddles a chunk boundary would otherwise be split in half and might not be retrieved in either piece.
 
-v0.1 uses *context stuffing*: the entire document goes into every request. That's simple and accurate for small docs, but:
-- large documents exceed the model's context window (we truncate at `MAX_DOC_CHARS`)
-- every question pays for the full document's tokens
+### v0.1 → v0.2
 
-**v0.2 replaces this with Retrieval-Augmented Generation (RAG):** chunk the document, embed the chunks, and send only the most relevant chunks for each question.
+v0.1 sent the *whole document* with every question (context stuffing). That works for small files, but large documents overflowed the context window and every question paid for every token. v0.2 sends ~5,000 characters of relevant excerpts regardless of document size.
 
 ## Tech stack
 
@@ -51,7 +59,10 @@ v0.1 uses *context stuffing*: the entire document goes into every request. That'
 | Styling | Tailwind CSS | Fast, consistent UI |
 | LLM | xAI Grok via the `openai` SDK | xAI's API is OpenAI-compatible, so switching providers means changing only `baseURL` |
 | PDF parsing | `unpdf` | Serverless-friendly PDF.js build, per-page text |
-| CI | GitHub Actions | Lint, typecheck, and build on every PR |
+| Embeddings | transformers.js + `all-MiniLM-L6-v2` (Web Worker) | Free, private, runs anywhere; no server-side ML runtime |
+| Retrieval | Cosine similarity (hand-written) | Simple and fast at single-document scale |
+| Testing | Vitest | Unit tests for chunking and retrieval |
+| CI | GitHub Actions | Lint, typecheck, test, and build on every PR |
 
 ## Getting started
 
@@ -63,13 +74,12 @@ cp .env.example .env.local   # then add your XAI_API_KEY
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000. Run the tests with `npm test`.
 
 | Variable | Description | Default |
 |---|---|---|
 | `XAI_API_KEY` | Your key from [console.x.ai](https://console.x.ai) | (required) |
 | `XAI_MODEL` | Grok model name ([list](https://docs.x.ai/docs/models)) | `grok-4` |
-| `MAX_DOC_CHARS` | Max document characters sent per request | `200000` |
 
 ## Project structure
 
@@ -78,10 +88,14 @@ src/
 ├── app/
 │   ├── page.tsx              # Split view: document + chat
 │   └── api/
-│       ├── upload/route.ts   # File → per-page text
-│       └── chat/route.ts     # Prompt building + streaming LLM response
+│       ├── upload/route.ts   # File → per-page text → chunks
+│       └── chat/route.ts     # Excerpts + question → streaming LLM response
 ├── components/               # UploadDropzone, DocumentPanel, ChatPanel, MessageBubble
 └── lib/
+    ├── chunk.ts              # Overlapping, boundary-aware text splitter
+    ├── embed.worker.ts       # Web Worker running the embedding model
+    ├── embedder.ts           # Promise-based client for the worker
+    ├── retrieval.ts          # Cosine similarity + top-k search
     ├── llm.ts                # Provider client (xAI Grok)
     ├── parse.ts              # PDF/TXT/MD text extraction
     ├── prompt.ts             # Grounding system prompt
@@ -91,8 +105,9 @@ src/
 ## Roadmap
 
 - [x] **v0.1:** Upload, chat, streaming, page citations
-- [ ] **v0.2:** RAG: chunking, embeddings, vector search, cited source snippets
-- [ ] **v0.3:** Multiple documents, saved conversations, inline PDF viewer, auth
+- [x] **v0.2:** RAG: chunking, in-browser embeddings, vector search, cited source snippets
+- [ ] **v0.3:** Multiple documents, persistent vector store (pgvector), saved conversations, inline PDF viewer, auth
+- [ ] Hybrid search (keyword BM25 + vectors) and re-ranking
 - [ ] Evaluation script comparing v0.1 vs v0.2 answer accuracy
 
 ## Challenges & learnings
@@ -101,6 +116,8 @@ src/
 - Why per-page extraction (enables citations)
 - Prompting to reduce hallucinations
 - Streaming from a route handler with ReadableStream
+- Moving embeddings to the browser after hitting Vercel's function size limit
+- Picking chunk size / overlap, and why follow-up questions retrieve poorly on their own
 -->
 
 ## License
